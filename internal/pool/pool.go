@@ -124,6 +124,10 @@ type Options struct {
 	// DialerRetryTimeout is the backoff duration between retry attempts.
 	// Default: 100ms
 	DialerRetryTimeout time.Duration
+
+	// DialerRetryBackoff controls the delay between dial retry attempts.
+	// If nil, dial retry backoff is constant and equals DialerRetryTimeout (default: 100ms).
+	DialerRetryBackoff func(attempt int) time.Duration
 }
 
 type lastDialErrorWrap struct {
@@ -387,10 +391,6 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if maxRetries <= 0 {
 		maxRetries = 5 // Default value
 	}
-	backoffDuration := p.cfg.DialerRetryTimeout
-	if backoffDuration <= 0 {
-		backoffDuration = 100 * time.Millisecond // Default value
-	}
 
 	var lastErr error
 	shouldLoop := true
@@ -418,6 +418,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 			// (not for the first attempt, do at least one)
 			// Do not sleep after the last attempt.
 			if attempt+1 < maxRetries {
+				backoffDuration := p.dialRetryBackoff(attempt)
 				select {
 				case <-ctx.Done():
 					shouldLoop = false
@@ -443,6 +444,22 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		go p.tryDial()
 	}
 	return nil, lastErr
+}
+
+func (p *ConnPool) dialRetryBackoff(attempt int) time.Duration {
+	if p.cfg.DialerRetryBackoff != nil {
+		d := p.cfg.DialerRetryBackoff(attempt)
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+
+	base := p.cfg.DialerRetryTimeout
+	if base <= 0 {
+		base = 100 * time.Millisecond
+	}
+	return base
 }
 
 // calcConnExpiresAt calculates the expiration time for a connection.
